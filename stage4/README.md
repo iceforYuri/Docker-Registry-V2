@@ -1,6 +1,6 @@
 # Docker Registry Lite - Java Spring Boot 实现
 
-一个符合 Docker Registry HTTP API V2 规范的简化后端服务，使用 Java Spring Boot 实现。
+java版本并没有采用严格的分模块进行，只使用了相对简单的mvc基础结构
 
 ## 功能特性
 
@@ -29,6 +29,8 @@
 - Lombok
 
 ## 项目结构
+
+项目结构从Go部分移植了一些，但也基于java进行了一些修改
 
 ```
 src/main/java/com/dockerregistry/
@@ -113,17 +115,43 @@ java -jar target/docker-registry-lite-1.0.0.jar
 本实现支持以下 Content-Type：
 
 ### Manifest 格式
+
 - `application/vnd.docker.distribution.manifest.v2+json`
 - `application/vnd.docker.distribution.manifest.list.v2+json`
 - `application/vnd.oci.image.manifest.v1+json`
 - `application/vnd.oci.image.index.v1+json`
 
 ### Blob 格式
+
 - `application/octet-stream`
 
 ## 测试
 
-在 Linux 系统中，你可以使用真实的 Docker 客户端来测试：
+### 1. 快速 API 测试
+
+项目提供了多个测试脚本来验证 Registry 功能：
+
+**Windows PowerShell:**
+
+```powershell
+# 基础功能测试
+.\test_basic.ps1
+
+# 全面功能测试
+.\test_registry_comprehensive.ps1
+```
+
+**Linux/macOS:**
+
+```bash
+# 基础功能测试
+chmod +x test_basic.sh
+./test_basic.sh
+```
+
+### 2. Docker 客户端测试
+
+也可以使用真实的 Docker 客户端来测试：
 
 1. 配置 Docker 允许不安全的 registry（编辑 `/etc/docker/daemon.json`）：
 
@@ -172,3 +200,23 @@ docker pull localhost:5000/test/hello-world:latest
 4. **标准错误响应** - 所有接口都实现了 400 和 404 错误响应
 5. **Content-Type 处理** - 正确处理所有 HTTP 请求的 content-type
 6. **Manifest 格式支持** - 支持多种 Manifest 和 Manifest List 格式
+
+## 实现状态
+
+✅ **项目完成** - 所有功能已实现并通过测试
+
+### 测试结果
+
+- ✅ **基础API测试** - `test_basic.ps1` 全部通过
+- ✅ **全面功能测试** - `test_registry_comprehensive.ps1` 全部通过
+- ✅ **所有Docker Registry V2 API** 均已正确实现
+
+| 功能             | stage3 (Go) | stage4 (Java Spring Boot) | 状态     |
+| ---------------- | ----------- | ------------------------- | -------- |
+| API版本检查      | ✅          | ✅                        | 完全一致 |
+| Blob分片上传     | ✅          | ✅                        | 完全一致 |
+| Blob查询下载     | ✅          | ✅                        | 完全一致 |
+| Manifest操作     | ✅          | ✅                        | 完全一致 |
+| SHA256校验       | ✅          | ✅                        | 完全一致 |
+| 错误处理         | ✅          | ✅                        | 完全一致 |
+| Content-Type支持 | ✅          | ✅                        | 完全一致 |

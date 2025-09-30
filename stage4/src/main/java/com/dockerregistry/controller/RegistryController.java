@@ -111,7 +111,7 @@ public class RegistryController {
                 try {
                     storageService.statBlob(mount);
                     // Blob 已存在，挂载成功
-                    String locationUrl = String.format("/v2/%s/blobs/%s", name, mount);
+                    String locationUrl = String.format("http://localhost:5000/v2/%s/blobs/%s", name, mount);
                     return ResponseEntity.status(HttpStatus.CREATED)
                             .header("Location", locationUrl)
                             .header("Docker-Content-Digest", mount)
@@ -123,7 +123,7 @@ public class RegistryController {
             
             // 开始新的上传会话
             String uploadId = storageService.startUpload(name);
-            String locationUrl = String.format("/v2/%s/blobs/uploads/%s", name, uploadId);
+            String locationUrl = String.format("http://localhost:5000/v2/%s/blobs/uploads/%s", name, uploadId);
             
             return ResponseEntity.status(HttpStatus.ACCEPTED)
                     .header("Location", locationUrl)
@@ -147,7 +147,7 @@ public class RegistryController {
         
         try {
             long size = storageService.statUpload(name, uuid);
-            String locationUrl = String.format("/v2/%s/blobs/uploads/%s", name, uuid);
+            String locationUrl = String.format("http://localhost:5000/v2/%s/blobs/uploads/%s", name, uuid);
             
             return ResponseEntity.status(HttpStatus.NO_CONTENT)
                     .header("Location", locationUrl)
@@ -174,7 +174,7 @@ public class RegistryController {
         
         try {
             long newSize = storageService.appendChunk(name, uuid, requestBody);
-            String locationUrl = String.format("/v2/%s/blobs/uploads/%s", name, uuid);
+            String locationUrl = String.format("http://localhost:5000/v2/%s/blobs/uploads/%s", name, uuid);
             
             return ResponseEntity.status(HttpStatus.ACCEPTED)
                     .header("Location", locationUrl)
@@ -209,7 +209,7 @@ public class RegistryController {
             // 提交上传
             storageService.commitUpload(name, uuid, digest);
             
-            String locationUrl = String.format("/v2/%s/blobs/%s", name, digest);
+            String locationUrl = String.format("http://localhost:5000/v2/%s/blobs/%s", name, digest);
             return ResponseEntity.status(HttpStatus.CREATED)
                     .header("Location", locationUrl)
                     .header("Docker-Content-Digest", digest)
@@ -280,11 +280,14 @@ public class RegistryController {
         try {
             FileSystemStorageService.ManifestData manifestData = storageService.getManifest(name, reference);
             
+            // 将字节数组转换为字符串以确保正确的JSON响应
+            String manifestJson = new String(manifestData.getContent(), java.nio.charset.StandardCharsets.UTF_8);
+            
             return ResponseEntity.ok()
                     .header("Content-Type", manifestData.getContentType())
                     .header("Content-Length", String.valueOf(manifestData.getContent().length))
                     .header("Docker-Content-Digest", manifestData.getDigest())
-                    .body(manifestData.getContent());
+                    .body(manifestJson);
                     
         } catch (ManifestNotFoundException e) {
             return createErrorResponse(HttpStatus.NOT_FOUND, "MANIFEST_UNKNOWN", "manifest unknown");
@@ -335,7 +338,7 @@ public class RegistryController {
             // 存储 Manifest
             String digest = storageService.putManifest(name, reference, contentType, requestBody);
             
-            String locationUrl = String.format("/v2/%s/manifests/%s", name, digest);
+            String locationUrl = String.format("http://localhost:5000/v2/%s/manifests/%s", name, digest);
             return ResponseEntity.status(HttpStatus.CREATED)
                     .header("Location", locationUrl)
                     .header("Docker-Content-Digest", digest)
