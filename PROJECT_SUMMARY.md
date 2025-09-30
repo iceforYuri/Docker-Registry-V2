@@ -1,51 +1,52 @@
 # Docker Registry 实现对比总结
 
-本项目成功实现了两个版本的Docker Registry HTTP API V2服务：
+该文档在测试后由ai进行生成
 
 ## 版本对比
 
-| 特性 | stage3 (Go) | stage4 (Java Spring Boot) |
-|------|-------------|---------------------------|
-| **编程语言** | Go 1.21+ | Java 17 |
-| **框架** | Gorilla Mux | Spring Boot 3.2.0 |
-| **构建工具** | Go Modules | Maven 3.x |
-| **端口** | :5000 | :5000 |
-| **存储** | 文件系统 | 文件系统 |
+| 特性               | stage3 (Go) | stage4 (Java Spring Boot) |
+| ------------------ | ----------- | ------------------------- |
+| **编程语言** | Go 1.21+    | Java 17                   |
+| **框架**     | Gorilla Mux | Spring Boot 3.2.0         |
+| **构建工具** | Go Modules  | Maven 3.x                 |
+| **端口**     | :5000       | :5000                     |
+| **存储**     | 文件系统    | 文件系统                  |
 
 ## 功能实现状态
 
 ### ✅ 完全实现的功能
 
 1. **API版本检查**
-   - `GET /v2/` - 返回Docker-Distribution-Api-Version头
 
+   - `GET /v2/` - 返回Docker-Distribution-Api-Version头
 2. **Blob分片上传**
+
    - `POST /v2/{name}/blobs/uploads/` - 开始上传会话
    - `PATCH /v2/{name}/blobs/uploads/{uuid}` - 上传数据块
    - `PUT /v2/{name}/blobs/uploads/{uuid}?digest={digest}` - 完成上传
    - `GET /v2/{name}/blobs/uploads/{uuid}` - 获取上传状态
    - `DELETE /v2/{name}/blobs/uploads/{uuid}` - 取消上传
-
 3. **Blob查询**
+
    - `HEAD /v2/{name}/blobs/{digest}` - 检查Blob存在性
    - `GET /v2/{name}/blobs/{digest}` - 下载Blob
-
 4. **Manifest操作**
-   - `PUT /v2/{name}/manifests/{reference}` - 上传Manifest
-   - `GET /v2/{name}/manifests/{reference}` - 下载Manifest  
-   - `HEAD /v2/{name}/manifests/{reference}` - 检查Manifest存在性
 
+   - `PUT /v2/{name}/manifests/{reference}` - 上传Manifest
+   - `GET /v2/{name}/manifests/{reference}` - 下载Manifest
+   - `HEAD /v2/{name}/manifests/{reference}` - 检查Manifest存在性
 5. **完整性校验**
+
    - SHA256 digest计算和验证
    - 上传内容完整性检查
    - Manifest依赖Blob验证
-
 6. **错误处理**
+
    - 标准Docker Registry错误响应格式
    - 400/404错误响应
    - 全局异常处理
-
 7. **Content-Type支持**
+
    - `application/vnd.docker.distribution.manifest.v2+json`
    - `application/vnd.docker.distribution.manifest.list.v2+json`
    - `application/vnd.oci.image.manifest.v1+json`
@@ -55,10 +56,12 @@
 ## 测试覆盖
 
 ### stage3 (Go版本)
+
 - ✅ `test_all.ps1` - 全面功能测试
 - ✅ `test_api.sh` - API测试脚本
 
 ### stage4 (Java版本)
+
 - ✅ `test_basic.ps1` - 基础功能快速测试
 - ✅ `test_registry_comprehensive.ps1` - 全面功能测试
 - ✅ `test_basic.sh` - Linux/macOS基础测试
@@ -66,6 +69,7 @@
 ## 架构对比
 
 ### Go版本 (stage3)
+
 ```
 cmd/registry/main.go
 internal/
@@ -76,6 +80,7 @@ internal/
 ```
 
 ### Java版本 (stage4)
+
 ```
 src/main/java/com/dockerregistry/
 ├── controller/  # REST控制器
@@ -88,12 +93,14 @@ src/main/java/com/dockerregistry/
 ## 性能特点
 
 ### Go版本优势
+
 - ✅ 更低的内存占用
 - ✅ 更快的启动时间
 - ✅ 更小的二进制文件
 - ✅ 原生并发支持
 
 ### Java版本优势
+
 - ✅ 丰富的Spring生态系统
 - ✅ 完善的依赖注入
 - ✅ 强大的AOP支持
@@ -103,6 +110,7 @@ src/main/java/com/dockerregistry/
 ## 部署方式
 
 ### Go版本
+
 ```bash
 # 编译
 go build -o registry ./cmd/registry
@@ -112,6 +120,7 @@ go build -o registry ./cmd/registry
 ```
 
 ### Java版本
+
 ```bash
 # 编译
 mvn clean package
@@ -132,5 +141,6 @@ mvn spring-boot:run
 4. **易于部署** - 简单的构建和运行流程
 
 根据不同的使用场景，可以选择合适的版本：
+
 - **Go版本** - 适合资源受限环境，追求高性能的场景
 - **Java版本** - 适合企业级应用，需要与Spring生态集成的场景
