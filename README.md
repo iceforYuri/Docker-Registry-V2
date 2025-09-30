@@ -1,6 +1,6 @@
 # Docker Registry Lite - Java Spring Boot 实现
 
-一个符合 Docker Registry HTTP API V2 规范的简化后端服务，使用 Java Spring Boot 实现。
+java版本并没有采用严格的分模块进行，只使用了相对简单的mvc基础结构
 
 ## 功能特性
 
@@ -29,6 +29,8 @@
 - Lombok
 
 ## 项目结构
+
+项目结构从Go部分移植了一些，但也基于java进行了一些修改
 
 ```
 src/main/java/com/dockerregistry/
@@ -113,12 +115,14 @@ java -jar target/docker-registry-lite-1.0.0.jar
 本实现支持以下 Content-Type：
 
 ### Manifest 格式
+
 - `application/vnd.docker.distribution.manifest.v2+json`
 - `application/vnd.docker.distribution.manifest.list.v2+json`
 - `application/vnd.oci.image.manifest.v1+json`
 - `application/vnd.oci.image.index.v1+json`
 
 ### Blob 格式
+
 - `application/octet-stream`
 
 ## 测试
@@ -128,6 +132,7 @@ java -jar target/docker-registry-lite-1.0.0.jar
 项目提供了多个测试脚本来验证 Registry 功能：
 
 **Windows PowerShell:**
+
 ```powershell
 # 基础功能测试
 .\test_basic.ps1
@@ -137,6 +142,7 @@ java -jar target/docker-registry-lite-1.0.0.jar
 ```
 
 **Linux/macOS:**
+
 ```bash
 # 基础功能测试
 chmod +x test_basic.sh
@@ -205,24 +211,12 @@ docker pull localhost:5000/test/hello-world:latest
 - ✅ **全面功能测试** - `test_registry_comprehensive.ps1` 全部通过
 - ✅ **所有Docker Registry V2 API** 均已正确实现
 
-### 与stage3对比
-
-| 功能 | stage3 (Go) | stage4 (Java Spring Boot) | 状态 |
-|------|-------------|---------------------------|------|
-| API版本检查 | ✅ | ✅ | 完全一致 |
-| Blob分片上传 | ✅ | ✅ | 完全一致 |
-| Blob查询下载 | ✅ | ✅ | 完全一致 |
-| Manifest操作 | ✅ | ✅ | 完全一致 |
-| SHA256校验 | ✅ | ✅ | 完全一致 |
-| 错误处理 | ✅ | ✅ | 完全一致 |
-| Content-Type支持 | ✅ | ✅ | 完全一致 |
-
-## 技术亮点
-
-1. **Spring Boot 3.x** - 使用最新的Spring Boot框架
-2. **Jakarta EE** - 支持现代Java企业级标准
-3. **函数式编程** - 充分利用Java 17的现代特性
-4. **完整的异常处理** - 全局异常处理器确保API稳定性
-5. **跨域支持** - 内置CORS配置支持前端调用
-6. **文件系统存储** - 兼容Docker Registry存储格式
-7. **完整的测试覆盖** - 提供PowerShell和Bash测试脚本
+| 功能             | stage3 (Go) | stage4 (Java Spring Boot) | 状态     |
+| ---------------- | ----------- | ------------------------- | -------- |
+| API版本检查      | ✅          | ✅                        | 完全一致 |
+| Blob分片上传     | ✅          | ✅                        | 完全一致 |
+| Blob查询下载     | ✅          | ✅                        | 完全一致 |
+| Manifest操作     | ✅          | ✅                        | 完全一致 |
+| SHA256校验       | ✅          | ✅                        | 完全一致 |
+| 错误处理         | ✅          | ✅                        | 完全一致 |
+| Content-Type支持 | ✅          | ✅                        | 完全一致 |
