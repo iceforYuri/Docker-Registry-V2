@@ -16,7 +16,7 @@ type Descriptor struct {
 // Manifest 代表一个镜像的元数据，对应于 content type
 // "application/vnd.docker.distribution.manifest.v2+json" 或 OCI 的
 // "application/vnd.oci.image.manifest.v1+json"。
-// 它的结构是兼容的。
+// 结构兼容
 type Manifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	MediaType     string `json:"mediaType"`
@@ -36,7 +36,7 @@ type PlatformSpec struct {
 }
 
 // ManifestDescriptor 在 Manifest List 中描述一个具体的 manifest 引用。
-// 它基本上是一个带有平台信息的 Descriptor。
+// 一个带有平台信息的 Descriptor。
 type ManifestDescriptor struct {
 	MediaType   string            `json:"mediaType"`
 	Size        int64             `json:"size"`
@@ -48,7 +48,6 @@ type ManifestDescriptor struct {
 // ManifestList (也称为 Fat Manifest 或 Image Index) 是一个 manifest 的集合，
 // 通常用于支持多架构镜像。它对应于 content type
 // "application/vnd.docker.distribution.manifest.list.v2+json" 或 OCI 的
-
 // "application/vnd.oci.image.index.v1+json"。
 type ManifestList struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -57,4 +56,10 @@ type ManifestList struct {
 	// Manifests 列出了该 tag 下所有可用的 manifest。
 	// Docker 客户端会根据自身的平台选择合适的 manifest 进行拉取。
 	Manifests []ManifestDescriptor `json:"manifests"`
+}
+
+// ImageConfig 定义了镜像 config blob 的 JSON 结构
+type ImageConfig struct {
+	OS           string `json:"os"`
+	Architecture string `json:"architecture"`
 }
