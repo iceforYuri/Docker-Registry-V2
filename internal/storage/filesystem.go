@@ -3,6 +3,8 @@ package storage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -286,49 +288,154 @@ func (fs *FileSystemStorage) DeleteUpload(repo, uploadID string) error {
 
 // --- Manifest 操作 ---
 
-// PutManifest 存储一个 Manifest。
-// Manifest 本身也会作为一个 Blob 被存储。
-// 同时，它会创建或更新 tag->digest 的链接。
-func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string, manifest []byte) (string, error) {
-	// 1. 计算 Manifest 的 digest
-	hasher := sha256.New()
-	hasher.Write(manifest)
-	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+// getManifestPlatform 用于从一个 manifest 内容中解析出其平台信息。
+// 通过读取 manifest 指向的 config blob 来实现。
+func (fs *FileSystemStorage) getManifestPlatform(manifestBytes []byte) (*registry.PlatformSpec, error) {
+	var m registry.Manifest
+	if err := json.Unmarshal(manifestBytes, &m); err != nil {
+		// 如果解析失败，可能不是一个单架构 manifest，我们暂时不处理这种情况
+		return nil, fmt.Errorf("not a single-arch manifest")
+	}
 
-	// 2. 存储 Manifest 内容为 Blob
-	blobPath, err := fs.getBlobPath(digest)
+	configBytes, err := fs.GetBlobAsBytes(m.Config.Digest)
 	if err != nil {
-		return "", err
-	}
-	if err := fs.ensureDir(filepath.Dir(blobPath)); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(blobPath, manifest, 0644); err != nil {
-		return "", err
+		return nil, fmt.Errorf("failed to get config blob %s: %w", m.Config.Digest, err)
 	}
 
-	// 3. 创建 tag 链接（仅当 reference 是 tag）
-	if !strings.HasPrefix(reference, "sha256:") {
-		tagPath := fs.getManifestTagPath(repoName, reference)
-		if err := fs.ensureDir(filepath.Dir(tagPath)); err != nil {
-			return "", err
+	var config registry.ImageConfig
+	if err := json.Unmarshal(configBytes, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config json: %w", err)
+	}
+
+	return &registry.PlatformSpec{
+		Architecture: config.Architecture,
+		OS:           config.OS,
+	}, nil
+}
+
+// GetBlobAsBytes 是 GetBlob 的一个便利封装，直接返回字节切片。
+func (fs *FileSystemStorage) GetBlobAsBytes(digest string) ([]byte, error) {
+	reader, err := fs.GetBlob(digest)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return io.ReadAll(reader)
+}
+
+// writeBlobData 封装了 Create->Write->Sync->Close 流程，用于以健壮的方式将数据写入 blob 存储。
+func (fs *FileSystemStorage) writeBlobData(digest string, data []byte) error {
+	path, err := fs.getBlobPath(digest)
+	if err != nil {
+		return err
+	}
+	if err := fs.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	_, err = file.Write(data)
+	if err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// PutManifest (最终版) - 实现了智能的 manifest list 维护和健壮的文件写入。
+// reference 可以是 tag 或 digest。
+// newManifestBytes 是客户端上传的单架构 manifest 内容。
+func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string, newManifestBytes []byte) (string, error) {
+	// 步骤 1: 存储新上传的 manifest blob...
+	hasher := sha256.New()
+	hasher.Write(newManifestBytes)
+	newDigest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	if err := fs.writeBlobData(newDigest, newManifestBytes); err != nil {
+		return "", fmt.Errorf("failed to write new manifest blob: %w", err)
+	}
+
+	if strings.HasPrefix(reference, "sha256:") {
+		return newDigest, nil
+	}
+
+	tag := reference
+	tagPath := fs.getManifestTagPath(repoName, tag)
+	newPlatform, err := fs.getManifestPlatform(newManifestBytes)
+	if err != nil {
+		return newDigest, os.WriteFile(tagPath, []byte(newDigest), 0644)
+	}
+
+	// 步骤 2: 准备 worklist...
+	var worklist []registry.ManifestDescriptor
+	existingDigestBytes, err := os.ReadFile(tagPath)
+	if err == nil {
+		// ... (构建 worklist 的逻辑与之前相同) ...
+		existingDigest := string(existingDigestBytes)
+		existingContentBytes, _, _, err := fs.GetManifest(repoName, existingDigest)
+		if err == nil {
+			var existingList registry.ManifestList
+			if json.Unmarshal(existingContentBytes, &existingList) == nil && (strings.Contains(existingList.MediaType, "list") || strings.Contains(existingList.MediaType, "index")) {
+				worklist = existingList.Manifests
+			} else {
+				platform, err := fs.getManifestPlatform(existingContentBytes)
+				if err == nil {
+					worklist = append(worklist, registry.ManifestDescriptor{MediaType: "application/vnd.docker.distribution.manifest.v2+json", Size: int64(len(existingContentBytes)), Digest: existingDigest, Platform: *platform})
+				}
+			}
 		}
-		if err := os.WriteFile(tagPath, []byte(digest), 0644); err != nil {
-			return "", err
+	}
+
+	// 步骤 3: 添加/更新 worklist...
+	newDescriptor := registry.ManifestDescriptor{MediaType: contentType, Size: int64(len(newManifestBytes)), Digest: newDigest, Platform: *newPlatform}
+	foundAndReplaced := false
+	for i := range worklist {
+		if worklist[i].Platform.OS == newPlatform.OS && worklist[i].Platform.Architecture == newPlatform.Architecture {
+			worklist[i] = newDescriptor
+			foundAndReplaced = true
+			break
 		}
 	}
-
-	// 4. 创建 revision 链接（推荐，便于后续扩展）
-	revisionPath := filepath.Join(
-		fs.repositoriesPath(), repoName, "_manifests", "revisions", "sha256", strings.TrimPrefix(digest, "sha256:"), "link")
-	if err := fs.ensureDir(filepath.Dir(revisionPath)); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(revisionPath, []byte(digest), 0644); err != nil {
-		return "", err
+	if !foundAndReplaced {
+		worklist = append(worklist, newDescriptor)
 	}
 
-	return digest, nil
+	// 步骤 4: 决定最终要标记的 digest...
+	var finalDigestToTag string
+	if len(worklist) <= 1 {
+		// --- 最终的逻辑修复！ ---
+		// 明确地从 worklist 中获取唯一的 digest，而不是依赖外部的 newDigest。
+		if len(worklist) == 1 {
+			finalDigestToTag = worklist[0].Digest
+		} else { // len is 0, should not happen, but for safety
+			finalDigestToTag = newDigest
+		}
+	} else {
+		// 创建并保存 manifest list
+		finalList := registry.ManifestList{SchemaVersion: 2, MediaType: "application/vnd.docker.distribution.manifest.list.v2+json", Manifests: worklist}
+		finalListBytes, _ := json.MarshalIndent(finalList, "", "   ")
+		finalListHasher := sha256.New()
+		finalListHasher.Write(finalListBytes)
+		finalListDigest := "sha256:" + hex.EncodeToString(finalListHasher.Sum(nil))
+		if err := fs.writeBlobData(finalListDigest, finalListBytes); err != nil {
+			return "", fmt.Errorf("failed to write new manifest list blob: %w", err)
+		}
+		finalDigestToTag = finalListDigest
+	}
+
+	// 步骤 5: 更新 tag 文件...
+	if err := os.WriteFile(tagPath, []byte(finalDigestToTag), 0644); err != nil {
+		return "", err
+	}
+
+	return newDigest, nil
 }
 
 // GetManifest 根据 reference (tag 或 digest) 获取 Manifest。
@@ -352,27 +459,30 @@ func (fs *FileSystemStorage) GetManifest(repoName, reference string) ([]byte, st
 		digest = string(digestBytes)
 	}
 
-	// 读取 Manifest 的 blob 内容
-	reader, err := fs.GetBlob(digest)
+	content, err := fs.GetBlobAsBytes(digest)
 	if err != nil {
-		if err == registry.ErrBlobNotFound {
+		if errors.Is(err, registry.ErrBlobNotFound) {
 			return nil, "", "", registry.ErrManifestNotFound
 		}
 		return nil, "", "", err
 	}
-	defer reader.Close()
 
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, "", "", err
+	// 智能 Content-Type 检测 ---
+	// 不再硬编码 Content-Type，而是从内容本身推断它。
+	var mediaType struct {
+		MediaType string `json:"mediaType"`
 	}
 
-	// TODO: 在 PutManifest 时存储 Content-Type 以便准确获取。
-	// 为简化，我们暂时假定所有 manifest 都是 v2 类型。
-	// 在一个完整的实现中，需要区分 manifest 和 manifest list。
-	contentType := "application/vnd.docker.distribution.manifest.v2+json"
+	var contentType string
+	if err := json.Unmarshal(content, &mediaType); err == nil && mediaType.MediaType != "" {
+		// 如果内容可以被解析为一个包含 "mediaType" 字段的 JSON，
+		// 我们就信任这个字段。这是最可靠的方式。
+		contentType = mediaType.MediaType
+	} else {
+		// 如果解析失败，或者没有 mediaType 字段，我们回退到一个安全的默认值。
+		contentType = "application/octet-stream"
+	}
 
-	// 返回 content, digest, contentType, 和 nil error
 	return content, digest, contentType, nil
 }
 
