@@ -216,7 +216,7 @@ func (h *Handler) handleManifestDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 假定 reference 是一个 tag
+	// reference 是一个 tag
 	err := h.Storage.DeleteTag(repoName, reference)
 	if err != nil {
 		if errors.Is(err, registry.ErrTagNotFound) {

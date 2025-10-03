@@ -93,9 +93,17 @@ func (h *Handler) handleBlobUploadStart(w http.ResponseWriter, r *http.Request) 
 	// --- 逻辑 1: 尝试挂载 Blob ---
 	if mountDigest != "" && fromRepo != "" {
 		// 客户端尝试进行跨仓库挂载。
-		// 在我们的内容寻址存储中，这简化为检查 blob 是否已存在。
+		// 在内容寻址存储中，这简化为检查 blob 是否已存在。
 		_, err := h.Storage.StatBlob(mountDigest)
 		if err == nil {
+
+			// 验证用户是否有权限从 fromRepo 挂载到 repoName
+			// if !h.canMountBetweenRepos(fromRepo, repoName, userContext) {
+			//     registry.WriteErrorResponse(w, http.StatusForbidden, "DENIED", "insufficient permission to mount")
+			//     return
+			// }
+			// 简化实现：总是允许
+
 			// Blob 已存在，挂载成功！
 			// 根据规范，返回 201 Created。
 			// Location header 指向 blob 的最终位置。
@@ -175,15 +183,14 @@ func (h *Handler) handleBlobUploadChunk(w http.ResponseWriter, r *http.Request) 
 	uploadID := vars["uuid"]
 
 	// 2. 验证 Content-Type
-	// 虽然文档中没有明确强制，但最佳实践是验证 Content-Type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "application/octet-stream" {
 		// 有些客户端可能不发送这个头，所以我们只记录日志而不是直接拒绝
-		// log.Printf("Warning: received PATCH request with non-standard Content-Type: %s", contentType)
+		log.Printf("Warning: received PATCH request with non-standard Content-Type: %s", contentType)
 	}
 
 	// 3. 调用存储层追加数据块
-	// r.Body 本身就是一个 io.Reader，我们可以直接流式传递，非常高效
+	// r.Body 本身就是一个 io.Reader，可以直接流式传递，非常高效
 	newSize, err := h.Storage.AppendChunk(repoName, uploadID, r.Body)
 	if err != nil {
 		if errors.Is(err, registry.ErrUploadNotFound) {
