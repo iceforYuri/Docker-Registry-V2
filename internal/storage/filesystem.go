@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	osfs "io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/google/uuid"
 
 	"docker-registry-lite/internal/registry"
@@ -354,50 +356,105 @@ func (fs *FileSystemStorage) writeBlobData(digest string, data []byte) error {
 // reference 可以是 tag 或 digest。
 // newManifestBytes 是客户端上传的单架构 manifest 内容。
 func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string, newManifestBytes []byte) (string, error) {
+	log.Printf("[INFO] PutManifest start: repo=%s reference=%s contentType=%s size=%d", repoName, reference, contentType, len(newManifestBytes))
+
 	// 步骤 1: 存储新上传的 manifest blob...
 	hasher := sha256.New()
 	hasher.Write(newManifestBytes)
 	newDigest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	log.Printf("[DEBUG] PutManifest: calculated newDigest=%s", newDigest)
+
 	if err := fs.writeBlobData(newDigest, newManifestBytes); err != nil {
+		log.Printf("[ERROR] PutManifest: writeBlobData failed for digest=%s err=%v", newDigest, err)
 		return "", fmt.Errorf("failed to write new manifest blob: %w", err)
 	}
+	log.Printf("[DEBUG] PutManifest: manifest blob written: digest=%s", newDigest)
+
+	revisionPath, err := fs.getManifestRevisionPath(repoName, newDigest)
+	if err != nil {
+		log.Printf("[ERROR] PutManifest: getManifestRevisionPath failed: %v", err)
+		return "", fmt.Errorf("failed to get revision path: %w", err)
+	}
+	if err := fs.ensureDir(revisionPath); err != nil {
+		log.Printf("[ERROR] PutManifest: ensureDir failed for revisionPath=%s err=%v", revisionPath, err)
+		return "", fmt.Errorf("failed to create revision directory: %w", err)
+	}
+	// 在修订目录内创建一个 link 文件，内容是它自身的 digest。
+	revisionLinkPath := filepath.Join(revisionPath, "link")
+	if err := os.WriteFile(revisionLinkPath, []byte(newDigest), 0644); err != nil {
+		log.Printf("[ERROR] PutManifest: failed to write revision link %s err=%v", revisionLinkPath, err)
+		return "", fmt.Errorf("failed to write revision link: %w", err)
+	}
+	log.Printf("[DEBUG] PutManifest: revision link written: %s", revisionLinkPath)
 
 	if strings.HasPrefix(reference, "sha256:") {
+		log.Printf("[INFO] PutManifest: reference is digest, returning newDigest=%s", newDigest)
 		return newDigest, nil
 	}
 
 	tag := reference
 	tagPath := fs.getManifestTagPath(repoName, tag)
+	log.Printf("[DEBUG] PutManifest: tagPath=%s", tagPath)
+
 	newPlatform, err := fs.getManifestPlatform(newManifestBytes)
 	if err != nil {
-		return newDigest, os.WriteFile(tagPath, []byte(newDigest), 0644)
+		// 无法解析 platform，直接写入 tag link（最简单的回退）
+		log.Printf("[WARN] PutManifest: getManifestPlatform failed for new manifest, falling back to direct tag write: err=%v", err)
+		if werr := os.WriteFile(tagPath, []byte(newDigest), 0644); werr != nil {
+			log.Printf("[ERROR] PutManifest: failed to write tag link fallback path=%s err=%v", tagPath, werr)
+			return newDigest, werr
+		}
+		log.Printf("[INFO] PutManifest: tag link written (fallback) %s -> %s", tagPath, newDigest)
+		return newDigest, nil
 	}
+	log.Printf("[DEBUG] PutManifest: new manifest platform detected: os=%s arch=%s", newPlatform.OS, newPlatform.Architecture)
 
 	// 步骤 2: 准备 worklist...
 	var worklist []registry.ManifestDescriptor
 	existingDigestBytes, err := os.ReadFile(tagPath)
 	if err == nil {
-		// ... (构建 worklist 的逻辑与之前相同) ...
 		existingDigest := string(existingDigestBytes)
+		log.Printf("[DEBUG] PutManifest: existing tag points to digest=%s", existingDigest)
 		existingContentBytes, _, _, err := fs.GetManifest(repoName, existingDigest)
 		if err == nil {
 			var existingList registry.ManifestList
 			if json.Unmarshal(existingContentBytes, &existingList) == nil && (strings.Contains(existingList.MediaType, "list") || strings.Contains(existingList.MediaType, "index")) {
 				worklist = existingList.Manifests
+				log.Printf("[DEBUG] PutManifest: existing manifest is a list with %d entries", len(worklist))
 			} else {
 				platform, err := fs.getManifestPlatform(existingContentBytes)
 				if err == nil {
-					worklist = append(worklist, registry.ManifestDescriptor{MediaType: "application/vnd.docker.distribution.manifest.v2+json", Size: int64(len(existingContentBytes)), Digest: existingDigest, Platform: *platform})
+					worklist = append(worklist, registry.ManifestDescriptor{
+						MediaType: "application/vnd.docker.distribution.manifest.v2+json",
+						Size:      int64(len(existingContentBytes)),
+						Digest:    existingDigest,
+						Platform:  *platform,
+					})
+					log.Printf("[DEBUG] PutManifest: existing manifest is single-arch, added to worklist: digest=%s os=%s arch=%s", existingDigest, platform.OS, platform.Architecture)
+				} else {
+					log.Printf("[WARN] PutManifest: failed to get platform for existing manifest digest=%s err=%v", existingDigest, err)
 				}
 			}
+		} else {
+			log.Printf("[WARN] PutManifest: GetManifest failed for existingDigest=%s err=%v", existingDigest, err)
 		}
+	} else {
+		log.Printf("[DEBUG] PutManifest: tagPath does not exist or cannot be read: %v", err)
 	}
 
 	// 步骤 3: 添加/更新 worklist...
-	newDescriptor := registry.ManifestDescriptor{MediaType: contentType, Size: int64(len(newManifestBytes)), Digest: newDigest, Platform: *newPlatform}
+	newDescriptor := registry.ManifestDescriptor{
+		MediaType: contentType,
+		Size:      int64(len(newManifestBytes)),
+		Digest:    newDigest,
+		Platform:  *newPlatform,
+	}
+	log.Printf("[DEBUG] PutManifest: newDescriptor=%+v", newDescriptor)
+
 	foundAndReplaced := false
 	for i := range worklist {
 		if worklist[i].Platform.OS == newPlatform.OS && worklist[i].Platform.Architecture == newPlatform.Architecture {
+			log.Printf("[DEBUG] PutManifest: replacing existing entry at index %d (os=%s arch=%s)", i, worklist[i].Platform.OS, worklist[i].Platform.Architecture)
 			worklist[i] = newDescriptor
 			foundAndReplaced = true
 			break
@@ -405,17 +462,18 @@ func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string
 	}
 	if !foundAndReplaced {
 		worklist = append(worklist, newDescriptor)
+		log.Printf("[DEBUG] PutManifest: appended new entry to worklist, total entries=%d", len(worklist))
 	}
 
 	// 步骤 4: 决定最终要标记的 digest...
 	var finalDigestToTag string
 	if len(worklist) <= 1 {
-		// --- 最终的逻辑修复！ ---
-		// 明确地从 worklist 中获取唯一的 digest，而不是依赖外部的 newDigest。
 		if len(worklist) == 1 {
 			finalDigestToTag = worklist[0].Digest
-		} else { // len is 0, should not happen, but for safety
+			log.Printf("[DEBUG] PutManifest: single-entry worklist selected digest=%s", finalDigestToTag)
+		} else {
 			finalDigestToTag = newDigest
+			log.Printf("[WARN] PutManifest: worklist empty, falling back to newDigest=%s", finalDigestToTag)
 		}
 	} else {
 		// 创建并保存 manifest list
@@ -424,17 +482,27 @@ func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string
 		finalListHasher := sha256.New()
 		finalListHasher.Write(finalListBytes)
 		finalListDigest := "sha256:" + hex.EncodeToString(finalListHasher.Sum(nil))
+		log.Printf("[DEBUG] PutManifest: created manifest list digest=%s entries=%d", finalListDigest, len(worklist))
 		if err := fs.writeBlobData(finalListDigest, finalListBytes); err != nil {
+			log.Printf("[ERROR] PutManifest: failed to write manifest list blob digest=%s err=%v", finalListDigest, err)
 			return "", fmt.Errorf("failed to write new manifest list blob: %w", err)
 		}
+		log.Printf("[DEBUG] PutManifest: manifest list blob written digest=%s", finalListDigest)
 		finalDigestToTag = finalListDigest
 	}
 
 	// 步骤 5: 更新 tag 文件...
-	if err := os.WriteFile(tagPath, []byte(finalDigestToTag), 0644); err != nil {
+	if err := fs.ensureDir(filepath.Dir(tagPath)); err != nil {
+		log.Printf("[ERROR] PutManifest: ensureDir failed for tag dir %s err=%v", filepath.Dir(tagPath), err)
 		return "", err
 	}
+	if err := os.WriteFile(tagPath, []byte(finalDigestToTag), 0644); err != nil {
+		log.Printf("[ERROR] PutManifest: failed to write tag link %s -> %s err=%v", tagPath, finalDigestToTag, err)
+		return "", err
+	}
+	log.Printf("[INFO] PutManifest: tag updated %s -> %s", tagPath, finalDigestToTag)
 
+	log.Printf("[INFO] PutManifest success: repo=%s tag=%s newDigest=%s finalDigestToTag=%s", repoName, tag, newDigest, finalDigestToTag)
 	return newDigest, nil
 }
 
@@ -446,6 +514,17 @@ func (fs *FileSystemStorage) GetManifest(repoName, reference string) ([]byte, st
 	// 判断 reference 是 tag 还是 digest
 	if strings.HasPrefix(reference, "sha256:") {
 		digest = reference
+		// 在通过 digest 获取 manifest 之前，必须先验证它是否属于这个仓库。
+		// 我们通过检查 revision link 是否存在来做到这一点。
+		revisionPath, err := fs.getManifestRevisionPath(repoName, digest)
+		if err != nil {
+			return nil, "", "", err // 可能是 digest 格式错误
+		}
+		if _, err := os.Stat(revisionPath); os.IsNotExist(err) {
+			// 如果 revision link 不存在，意味着这个 manifest 不属于该仓库
+			// (或者已经被删除了)，因此我们必须返回 Not Found。
+			return nil, "", "", registry.ErrManifestNotFound
+		}
 	} else {
 		// 如果是 tag，需要读取 link 文件来找到 digest
 		tagPath := fs.getManifestTagPath(repoName, reference)
@@ -499,6 +578,116 @@ func (fs *FileSystemStorage) DeleteTag(repoName, tag string) error {
 		}
 		return err
 	}
+	return nil
+}
+
+func (fs *FileSystemStorage) getManifestRevisionPath(repoName, digest string) (string, error) {
+	parts := strings.SplitN(digest, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid digest format: %s", digest)
+	}
+	alg, hex := parts[0], parts[1]
+	p := fs.path("v2", "repositories", repoName, "_manifests", "revisions", alg, hex)
+	log.Printf("[DEBUG] getManifestRevisionPath: repo=%s digest=%s -> %s", repoName, digest, p)
+	return p, nil
+}
+
+// getManifestsTagsPath 返回仓库的 tags 根目录。
+func (fs *FileSystemStorage) getManifestsTagsPath(repoName string) string {
+	p := fs.path("v2", "repositories", repoName, "_manifests", "tags")
+	log.Printf("[DEBUG] getManifestsTagsPath: repo=%s -> %s", repoName, p)
+	return p
+}
+
+// getLockPath 返回仓库的 manifest 锁文件路径。
+func (fs *FileSystemStorage) getLockPath(repoName string) string {
+	p := fs.path("v2", "repositories", repoName, "_manifests", "lock")
+	log.Printf("[DEBUG] getLockPath: repo=%s -> %s", repoName, p)
+	return p
+}
+
+// DeleteManifest (最终合规版) - 按 digest 删除一个 unreferenced manifest。
+func (fs *FileSystemStorage) DeleteManifest(repoName, digest string) error {
+	log.Printf("[INFO] DeleteManifest start: repo=%s digest=%s", repoName, digest)
+
+	// 步骤 1: 验证 manifest 是否存在。
+	revisionPath, err := fs.getManifestRevisionPath(repoName, digest)
+	if err != nil {
+		log.Printf("[ERROR] DeleteManifest: invalid digest: repo=%s digest=%s err=%v", repoName, digest, err)
+		return err
+	}
+	if _, err := os.Stat(revisionPath); os.IsNotExist(err) {
+		log.Printf("[WARN] DeleteManifest: revision not found: repo=%s digest=%s path=%s", repoName, digest, revisionPath)
+		return registry.ErrManifestNotFound
+	}
+
+	// 步骤 2: 获取仓库级别的独占锁，防止并发冲突。
+	lockPath := fs.getLockPath(repoName)
+	if err := fs.ensureDir(filepath.Dir(lockPath)); err != nil {
+		log.Printf("[ERROR] DeleteManifest: ensureDir failed for lock dir: %v", err)
+		return err
+	}
+	fileLock := flock.New(lockPath)
+
+	log.Printf("[DEBUG] DeleteManifest: attempting to acquire lock: %s", lockPath)
+	// 尝试加锁，如果失败则返回错误
+	locked, err := fileLock.TryLock()
+	if err != nil {
+		log.Printf("[ERROR] DeleteManifest: failed to acquire lock: %v", err)
+		return fmt.Errorf("failed to acquire repository lock: %w", err)
+	}
+	if !locked {
+		log.Printf("[WARN] DeleteManifest: repository locked by another operation: repo=%s", repoName)
+		return fmt.Errorf("repository is locked by another operation")
+	}
+	log.Printf("[DEBUG] DeleteManifest: lock acquired: %s", lockPath)
+	defer func() {
+		if err := fileLock.Unlock(); err != nil {
+			log.Printf("[ERROR] DeleteManifest: failed to release lock: %v", err)
+		} else {
+			log.Printf("[DEBUG] DeleteManifest: lock released: %s", lockPath)
+		}
+	}()
+
+	// 步骤 3: 遍历所有 tags，进行引用检查。
+	tagsPath := fs.getManifestsTagsPath(repoName)
+	log.Printf("[DEBUG] DeleteManifest: scanning tags under %s for references to %s", tagsPath, digest)
+	err = filepath.WalkDir(tagsPath, func(path string, d osfs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// 我们只关心名为 "link" 的文件
+		if !d.IsDir() && d.Name() == "link" {
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if string(content) == digest {
+				log.Printf("[WARN] DeleteManifest: found referencing tag link: %s -> %s", path, digest)
+				// 找到了引用！返回特定错误以中止 WalkDir
+				return registry.ErrManifestReferenced
+			}
+		}
+		return nil
+	})
+
+	// 检查遍历结果
+	if err != nil {
+		if errors.Is(err, registry.ErrManifestReferenced) {
+			log.Printf("[INFO] DeleteManifest: manifest is referenced and cannot be deleted: repo=%s digest=%s", repoName, digest)
+			return registry.ErrManifestReferenced // 将引用错误向上传递
+		}
+		log.Printf("[ERROR] DeleteManifest: error while scanning tags: %v", err)
+		return err // 其他遍历错误
+	}
+
+	// 步骤 4: 引用检查通过，执行删除操作。
+	// 我们删除的是修订链接目录，而不是底层的 blob。
+	if err := os.RemoveAll(revisionPath); err != nil {
+		log.Printf("[ERROR] DeleteManifest: failed to remove revision path: %s err=%v", revisionPath, err)
+		return err
+	}
+	log.Printf("[INFO] DeleteManifest success: removed revision path: %s", revisionPath)
 	return nil
 }
 
