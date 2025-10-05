@@ -23,3 +23,18 @@
 对于同一个tag，同一个manifest应该被替换而不是被追加，但是在执行完替换后，worklist中仅剩一个条目
 
 服务器在 GET /manifests/latest 时，实际返回的 Docker-Content-Digest 头。而测试脚本却错误地信任了 docker inspect 的结果作为“预期值”，它受到了本地缓存的污染，我们应该从服务器的响应中获取真实的条目。
+
+### 两种方案对比
+
+元数据文件（完整项目中更合适）：
+
+* 在 PutManifest 时，除了写入 data 文件，还在旁边创建一个 metadata.json 文件，内容是 {"Content-Type": "...", "digest": "..."}。
+* 在 GetManifest 时，先读取 metadata.json 获取 Content-Type，然后再读取 data 文件获取内容。
+* 容易导致该文件读写的原子性问题
+
+内容中推断：
+
+* 在 GetManifest 时，先读取 data 文件的全部内容
+* 尝试将内容解析为一个只包含 mediaType 字段的最小化 JSON 结构。
+* 如果解析成功，就使用这个 mediaType 作为 Content-Type。
+* 如果未来需要支持一种没有 mediaType 字段的新 manifest 格式，这个方案就会失效。
