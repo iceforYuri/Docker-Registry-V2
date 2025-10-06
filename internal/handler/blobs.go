@@ -90,51 +90,60 @@ func (h *Handler) handleBlobUploadStart(w http.ResponseWriter, r *http.Request) 
 	mountDigest := r.URL.Query().Get("mount")
 	fromRepo := r.URL.Query().Get("from")
 
-	// --- 逻辑 1: 尝试挂载 Blob ---
+	// --- 逻辑 1: 尝试挂载 Blob (升级版) ---
 	if mountDigest != "" && fromRepo != "" {
-		// 客户端尝试进行跨仓库挂载。
-		// 在内容寻址存储中，这简化为检查 blob 是否已存在。
-		_, err := h.Storage.StatBlob(mountDigest)
+
+		if !registry.DigestRegex.MatchString(mountDigest) {
+			registry.WriteErrorResponse(w, http.StatusBadRequest, "DIGEST_INVALID", "invalid digest format")
+			return
+		}
+		// 1a. (模拟) 权限检查: 验证源仓库 fromRepo 是否存在。
+		//     在一个真实的系统中，这里会进行复杂的认证授权检查。
+		exists, err := h.Storage.RepositoryExists(fromRepo)
+		if err != nil {
+			registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to check source repository")
+			return
+		}
+		if !exists {
+			// 如果源仓库不存在，挂载失败，回退到标准上传流程。
+			goto StartStandardUpload
+		}
+
+		// 1b. 内容检查: 检查 blob 是否在全局存储中存在。
+		_, err = h.Storage.StatBlob(mountDigest)
 		if err == nil {
-
-			// 验证用户是否有权限从 fromRepo 挂载到 repoName
-			// if !h.canMountBetweenRepos(fromRepo, repoName, userContext) {
-			//     registry.WriteErrorResponse(w, http.StatusForbidden, "DENIED", "insufficient permission to mount")
-			//     return
-			// }
-			// 简化实现：总是允许
-
 			// Blob 已存在，挂载成功！
-			// 根据规范，返回 201 Created。
-			// Location header 指向 blob 的最终位置。
-			locationURL := fmt.Sprintf("/v2/%s/blobs/%s", repoName, mountDigest)
-			absoluteURL := buildAbsoluteURL(r, locationURL)
+
+			// 1c. 元数据关联: 在当前仓库中创建 blob 链接。
+			if err := h.Storage.LinkBlob(repoName, mountDigest); err != nil {
+				registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to link blob to repository")
+				return
+			}
+
+			// 1d. 返回成功的响应
+			relativePath := fmt.Sprintf("/v2/%s/blobs/%s", repoName, mountDigest)
+			absoluteURL := buildAbsoluteURL(r, relativePath)
 			w.Header().Set("Location", absoluteURL)
 			w.Header().Set("Docker-Content-Digest", mountDigest)
 			w.WriteHeader(http.StatusCreated)
-			return // 请求处理完毕
+			return // 挂载流程成功结束
 		}
-		// 如果 StatBlob 出错 (例如 ErrBlobNotFound)，说明挂载失败。
-		// 我们不需要在这里返回错误，而是优雅地回退到标准的上传流程。
+		// 如果 StatBlob 出错 (例如 ErrBlobNotFound)，挂载失败，回退到标准上传流程。
 	}
 
-	// --- 逻辑 2: 开始新的上传 ---
-	// 如果代码执行到这里，意味着：
-	// a) 客户端没有请求挂载。
-	// b) 客户端请求挂载，但 blob 不存在，挂载失败。
+	// --- 逻辑 2: 开始新的上传 (作为默认或回退路径) ---
+StartStandardUpload:
 	uploadID, err := h.Storage.StartUpload(repoName)
 	if err != nil {
 		registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start upload session")
 		return
 	}
 
-	// 成功开始上传，根据规范返回 202 Accepted。
-	// Location header 指向这个新的上传会话。
-	locationURL := fmt.Sprintf("/v2/%s/blobs/uploads/%s", repoName, uploadID)
-	absoluteURL := buildAbsoluteURL(r, locationURL)
+	// 返回 202 Accepted 响应
+	relativePath := fmt.Sprintf("/v2/%s/blobs/uploads/%s", repoName, uploadID)
+	absoluteURL := buildAbsoluteURL(r, relativePath)
 	w.Header().Set("Location", absoluteURL)
 	w.Header().Set("Docker-Upload-UUID", uploadID)
-	// Range header 表示目前已接收 0 字节。
 	w.Header().Set("Range", "0-0")
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -166,7 +175,14 @@ func (h *Handler) handleBlobUploadStatus(w http.ResponseWriter, r *http.Request)
 	// Range header 表示已接收的字节范围，从 0 到 size-1
 	// 如果 size 为 0，Range header 将是 "0--1"，这是一个有效的但可能不常见的表示法
 	// 客户端应该能够从中计算出已接收的字节数为 0
-	w.Header().Set("Range", fmt.Sprintf("0-%d", size-1))
+	var rangeHeader string
+	if size > 0 {
+		rangeHeader = fmt.Sprintf("0-%d", size-1)
+	} else {
+		// 当 size 为 0 时，返回与 POST 响应一致的 "0-0"，表示接收范围为空。
+		rangeHeader = "0-0"
+	}
+	w.Header().Set("Range", rangeHeader)
 
 	// 4. 返回 204 No Content 状态码
 	// 这个状态码表示请求成功，但响应中没有 body 内容。
@@ -182,11 +198,51 @@ func (h *Handler) handleBlobUploadChunk(w http.ResponseWriter, r *http.Request) 
 	repoName := vars["name"]
 	uploadID := vars["uuid"]
 
+	// 2. 严格的 Content-Range 校验
+	// 获取当前上传的大小，作为我们期望的起始偏移量。
+	currentSize, err := h.Storage.StatUpload(repoName, uploadID)
+	if err != nil {
+		if errors.Is(err, registry.ErrUploadNotFound) {
+			registry.WriteErrorResponse(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "blob upload unknown to registry")
+			return
+		}
+		registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get upload status for validation")
+		return
+	}
+
 	// 2. 验证 Content-Type
-	contentType := r.Header.Get("Content-Type")
-	if contentType != "application/octet-stream" {
-		// 有些客户端可能不发送这个头，所以我们只记录日志而不是直接拒绝
-		log.Printf("Warning: received PATCH request with non-standard Content-Type: %s", contentType)
+	contentRange := r.Header.Get("Content-Range")
+	if contentRange != "" {
+		// 如果客户端提供了 Content-Range，我们必须校验它。
+		var start, end int64
+		// 格式应为 "start-end"
+		parts := strings.SplitN(contentRange, "-", 2)
+		if len(parts) != 2 {
+			registry.WriteErrorResponse(w, http.StatusBadRequest, "INVALID_RANGE", "invalid Content-Range format")
+			return
+		}
+		start, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			registry.WriteErrorResponse(w, http.StatusBadRequest, "INVALID_RANGE", "invalid start of range")
+			return
+		}
+		end, err = strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			registry.WriteErrorResponse(w, http.StatusBadRequest, "INVALID_RANGE", "invalid end of range")
+			return
+		}
+
+		// 核心校验：
+		// 1. 范围的起始必须等于我们已有的数据大小。
+		// 2. 范围的结束必须大于等于起始。
+		if start != currentSize || end < start {
+			// 如果范围不连续，返回 416 Range Not Satisfiable。
+			// 这是向客户端表明其提供的范围不正确的标准方式。
+			w.Header().Set("Location", buildAbsoluteURL(r, r.URL.Path))
+			w.Header().Set("Range", fmt.Sprintf("0-%d", currentSize-1)) // 告诉客户端我们真正拥有的范围
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 	}
 
 	// 3. 调用存储层追加数据块
@@ -207,6 +263,21 @@ func (h *Handler) handleBlobUploadChunk(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Location", absoluteURL)
 	w.Header().Set("Docker-Upload-UUID", uploadID)
 	w.Header().Set("Range", fmt.Sprintf("0-%d", newSize-1))
+
+	// --- 修正：确保 Range 响应头的一致性和正确性 ---
+	var rangeHeader string
+	if newSize > 0 {
+		rangeHeader = fmt.Sprintf("0-%d", newSize-1)
+	} else {
+		// 即使 newSize 为 0，也返回一个表示空范围的有效格式。
+		// "0-0" 通常表示已接收 1 字节，所以对于 0 字节，返回一个空或特殊的 header 更合适。
+		// 但为了与 POST 的 "0-0" 行为保持最大一致性，我们选择返回 "0-0"，
+		// 客户端应能从 Content-Length: 0 和 Range: 0-0 中推断出接收了 0 字节。
+		// 一个更严谨的表达可能是 "0--1"，但 "0-0" 更安全。
+		rangeHeader = "0-0"
+	}
+	w.Header().Set("Range", rangeHeader)
+	w.Header().Set("Content-Length", "0") // PATCH 响应体为空
 
 	// 5. 返回 202 Accepted
 	w.WriteHeader(http.StatusAccepted)

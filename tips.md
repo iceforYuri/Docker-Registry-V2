@@ -38,3 +38,12 @@
 * 尝试将内容解析为一个只包含 mediaType 字段的最小化 JSON 结构。
 * 如果解析成功，就使用这个 mediaType 作为 Content-Type。
 * 如果未来需要支持一种没有 mediaType 字段的新 manifest 格式，这个方案就会失效。
+
+## 存储理解
+
+* 语义差别：
+  * 删除 tag（删除 tags/`<tag>`/current/link）只是移除一个标签对某个 digest 的引用 —— manifest 仍被视为“仓库内存在”的修订（revisions 条目仍在）。这是“取消标签”的行为，不等同于从仓库中删除 manifest。
+  * 删除 revision（删除 revisions/`<alg>`/`<hex>` 目录及其 link）才是真正把该 digest 从该仓库的元数据中移除——也就是“从仓库中删除”这个 manifest（但不删除全局 content-addressed blob 数据，GC 另作处理）。
+* 为什么要改为删除 revisions：
+  * Registry 的语义是：manifest 是仓库级的实体，其存在状态由仓库的元数据（revisions + tag links）决定。要把 manifest 从仓库中删除，必须移除 revisions 记录；单纯删除某个 tag 不足以代表 manifest 被删除。
+  * 这样可以区分「有无标签但仍为仓库修订」与「完全从仓库中移除」，与上游 Registry 的行为一致，并便于实现垃圾回收策略（只移除仓库元数据，真正的 blob 数据由 GC 在确认没有任何仓库引用后清理）。

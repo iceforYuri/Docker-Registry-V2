@@ -124,6 +124,55 @@ func (fs *FileSystemStorage) StatBlob(digest string) (int64, error) {
 	return info.Size(), nil
 }
 
+// getRepositoryPath 计算给定仓库的根目录路径。
+func (fs *FileSystemStorage) getRepositoryPath(repoName string) string {
+	return fs.path("v2", "repositories", repoName)
+}
+
+// getLayerLinkPath 计算一个 blob 在特定仓库中的 layer link 文件路径。
+// 格式: <root>/v2/repositories/<name>/_layers/sha256/<digest>/link
+func (fs *FileSystemStorage) getLayerLinkPath(repoName, digest string) (string, error) {
+	parts := strings.SplitN(digest, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid digest format: %s", digest)
+	}
+	alg, hex := parts[0], parts[1]
+
+	return fs.path("v2", "repositories", repoName, "_layers", alg, hex, "link"), nil
+}
+
+// RepositoryExists 检查一个仓库是否存在。
+// 在我们的文件系统实现中，这等同于检查对应的目录是否存在。
+func (fs *FileSystemStorage) RepositoryExists(repoName string) (bool, error) {
+	path := fs.getRepositoryPath(repoName)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil // 不存在，且不是一个错误
+		}
+		return false, err // 其他系统错误
+	}
+	return info.IsDir(), nil
+}
+
+// LinkBlob 在一个仓库的元数据中创建一个指向全局 blob 的链接。
+// 这表明该仓库正在引用这个 blob。
+func (fs *FileSystemStorage) LinkBlob(repoName, digest string) error {
+	linkPath, err := fs.getLayerLinkPath(repoName, digest)
+	if err != nil {
+		return err
+	}
+
+	// 确保目标目录存在
+	if err := fs.ensureDir(filepath.Dir(linkPath)); err != nil {
+		return err
+	}
+
+	// 创建一个 link 文件，文件内容就是 blob 的 digest。
+	// 这对于 GC 等管理操作很有用。
+	return os.WriteFile(linkPath, []byte(digest), 0644)
+}
+
 // --- 下载内容 ---
 // GetBlob 返回一个可读的 io.ReadCloser 来访问 Blob 数据。
 // 调用者有责任关闭返回的 reader。
