@@ -23,11 +23,12 @@ const (
 )
 
 var (
-	ErrBlobNotFound     = errors.New("blob not found")
-	ErrDigestMismatch   = errors.New("digest mismatch")
-	ErrManifestNotFound = errors.New("manifest not found")
-	ErrUploadNotFound   = errors.New("upload not found")
-	ErrTagNotFound      = errors.New("tag not found")
+	ErrBlobNotFound       = errors.New("blob not found")
+	ErrDigestMismatch     = errors.New("digest mismatch")
+	ErrManifestNotFound   = errors.New("manifest not found")
+	ErrUploadNotFound     = errors.New("upload not found")
+	ErrTagNotFound        = errors.New("tag not found")
+	ErrManifestReferenced = errors.New("manifest referenced by tag")
 )
 
 type ErrorResponse struct {

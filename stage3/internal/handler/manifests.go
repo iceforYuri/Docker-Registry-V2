@@ -96,9 +96,9 @@ func (h *Handler) handleManifestPut(w http.ResponseWriter, r *http.Request) {
 	switch contentType {
 	case "application/vnd.docker.distribution.manifest.v2+json",
 		"application/vnd.docker.distribution.manifest.list.v2+json",
-		"application/vnd.oci.image.manifest.v1+json",
-		"application/vnd.oci.image.index.v1+json":
-		// 这是我们支持的类型，什么也不做，继续执行
+		"application/vnd.docker.distribution.manifest.v1+json", // Docker v1 manifest
+		"application/vnd.oci.image.manifest.v1+json",           // OCI Image manifest
+		"application/vnd.oci.image.index.v1+json":              // OCI Image index
 	default:
 		// 如果不是以上任何一种，则返回错误
 		registry.WriteErrorResponse(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "unsupported manifest media type")
@@ -203,30 +203,70 @@ func (h *Handler) handleManifestPut(w http.ResponseWriter, r *http.Request) {
 // handleManifestDelete 负责处理 DELETE /v2/{name}/manifests/{reference} 请求。
 // 在我们的简化实现中，我们只支持删除 tag，而不是删除 digest。
 // 删除 digest 属于垃圾回收(GC)的范畴，更为复杂。
+// func (h *Handler) handleManifestDelete(w http.ResponseWriter, r *http.Request) {
+// 	vars := mux.Vars(r)
+// 	repoName := vars["name"]
+// 	reference := vars["reference"]
+
+// 	// 规范要求通过 digest 来删除 manifest，但实际使用中删除 tag 更常见。
+// 	// 我们在这里做一个简化：如果 reference 是 digest，我们返回未实现。
+// 	if strings.HasPrefix(reference, "sha256:") {
+// 		// 删除 manifest blob 是一个复杂操作，通常由 GC 完成
+// 		registry.WriteErrorResponse(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "deleting manifest by digest is not supported")
+// 		return
+// 	}
+
+// 	// reference 是一个 tag
+// 	err := h.Storage.DeleteTag(repoName, reference)
+// 	if err != nil {
+// 		if errors.Is(err, registry.ErrTagNotFound) {
+// 			registry.WriteErrorResponse(w, http.StatusNotFound, "TAG_UNKNOWN", "tag not known")
+// 			return
+// 		}
+// 		registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete tag")
+// 		return
+// 	}
+
+// 	// 成功删除，根据规范返回 202 Accepted
+// 	w.WriteHeader(http.StatusAccepted)
+// }
+
 func (h *Handler) handleManifestDelete(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["name"]
 	reference := vars["reference"]
 
-	// 规范要求通过 digest 来删除 manifest，但实际使用中删除 tag 更常见。
-	// 我们在这里做一个简化：如果 reference 是 digest，我们返回未实现。
-	if strings.HasPrefix(reference, "sha256:") {
-		// 删除 manifest blob 是一个复杂操作，通常由 GC 完成
-		registry.WriteErrorResponse(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "deleting manifest by digest is not supported")
+	log.Printf("[INFO] handleManifestDelete start: repo=%s reference=%s remote=%s", repoName, reference, r.RemoteAddr)
+
+	// 步骤 1: 验证 reference 必须是 digest。
+	if !strings.HasPrefix(reference, "sha256:") {
+		log.Printf("[WARN] handleManifestDelete: attempted delete by tag (unsupported): repo=%s tag=%s", repoName, reference)
+		registry.WriteErrorResponse(w, http.StatusBadRequest, "UNSUPPORTED", "deleting manifest by tag is not supported")
 		return
 	}
 
-	// 假定 reference 是一个 tag
-	err := h.Storage.DeleteTag(repoName, reference)
+	// 步骤 2: 调用存储层执行删除操作。
+	err := h.Storage.DeleteManifest(repoName, reference)
 	if err != nil {
-		if errors.Is(err, registry.ErrTagNotFound) {
-			registry.WriteErrorResponse(w, http.StatusNotFound, "TAG_UNKNOWN", "tag not known")
+		// 步骤 3: 根据错误类型返回正确的 HTTP 响应。
+		if errors.Is(err, registry.ErrManifestNotFound) {
+			log.Printf("[WARN] handleManifestDelete: manifest not found: repo=%s digest=%s", repoName, reference)
+			registry.WriteErrorResponse(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 			return
 		}
-		registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete tag")
+		if errors.Is(err, registry.ErrManifestReferenced) {
+			// 根据题目要求返回 403 Forbidden
+			log.Printf("[WARN] handleManifestDelete: manifest is referenced by tag, cannot delete: repo=%s digest=%s", repoName, reference)
+			registry.WriteErrorResponse(w, http.StatusForbidden, "MANIFEST_REFERENCED", "manifest is referenced by a tag")
+			return
+		}
+		// 其他内部错误
+		log.Printf("[ERROR] handleManifestDelete: internal error deleting manifest: repo=%s digest=%s err=%v", repoName, reference, err)
+		registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete manifest")
 		return
 	}
 
-	// 成功删除，根据规范返回 202 Accepted
+	// 步骤 4: 成功，返回 202 Accepted。
 	w.WriteHeader(http.StatusAccepted)
+	log.Printf("[INFO] handleManifestDelete success: repo=%s digest=%s", repoName, reference)
 }
