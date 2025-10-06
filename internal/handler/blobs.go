@@ -271,7 +271,6 @@ func (h *Handler) handleBlobUploadChunk(w http.ResponseWriter, r *http.Request) 
 	} else {
 		// 即使 newSize 为 0，也返回一个表示空范围的有效格式。
 		// "0-0" 通常表示已接收 1 字节，所以对于 0 字节，返回一个空或特殊的 header 更合适。
-		// 但为了与 POST 的 "0-0" 行为保持最大一致性，我们选择返回 "0-0"，
 		// 客户端应能从 Content-Length: 0 和 Range: 0-0 中推断出接收了 0 字节。
 		// 一个更严谨的表达可能是 "0--1"，但 "0-0" 更安全。
 		rangeHeader = "0-0"

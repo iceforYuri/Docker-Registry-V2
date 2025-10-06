@@ -30,7 +30,7 @@ type FileSystemStorage struct {
 **/
 
 // NewFileSystemStorage 创建一个新的文件系统存储实例
-// 它会确保所有必要的根目录都已创建。
+// 确保所有必要的根目录都已创建。
 func NewFileSystemStorage(root string) (*FileSystemStorage, error) {
 	// 确保根目录是绝对路径，避免混淆
 	root, err := filepath.Abs(root)
@@ -98,7 +98,7 @@ func (fs *FileSystemStorage) getManifestTagPath(repoName, tag string) string {
 	return fs.path("v2", "repositories", repoName, "_manifests", "tags", tag, "current", "link")
 }
 
-// ensureDir 确保给定的目录路径存在。
+// 确保给定的目录路径存在。
 func (fs *FileSystemStorage) ensureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
@@ -142,7 +142,7 @@ func (fs *FileSystemStorage) getLayerLinkPath(repoName, digest string) (string, 
 }
 
 // RepositoryExists 检查一个仓库是否存在。
-// 在我们的文件系统实现中，这等同于检查对应的目录是否存在。
+// 等同于检查对应的目录是否存在。
 func (fs *FileSystemStorage) RepositoryExists(repoName string) (bool, error) {
 	path := fs.getRepositoryPath(repoName)
 	info, err := os.Stat(path)
@@ -196,13 +196,11 @@ func (fs *FileSystemStorage) GetBlob(digest string) (io.ReadCloser, error) {
 // StartUpload 在指定仓库下开始一个新的 Blob 上传，返回一个唯一的上传ID。
 func (fs *FileSystemStorage) StartUpload(repoName string) (string, error) {
 	// 1. 生成唯一标识符
-	// 每个上传会话都必须是唯一的，即使有成千上万个并发上传。
-	// UUID (Universally Unique Identifier) 是实现这一点的完美工具。
-	// 这个 UUID 就是客户端后续请求中需要携带的 <uuid>。
+	// 每个上传会话都必须是唯一的UUID
 	uploadID := uuid.NewString()
 
 	// 2. 确定临时工作区的路径
-	// 我们利用之前定义的辅助函数，根据仓库名和新生成的 UUID 计算出一个唯一的目录路径。
+	// 利用之前定义的辅助函数，根据仓库名和新生成的 UUID 计算出一个唯一的目录路径。
 	// 例如: /var/lib/registry/v2/repositories/my-app/_uploads/a1b2c3d4-....
 	uploadPath := fs.getUploadPath(repoName, uploadID)
 
@@ -264,7 +262,7 @@ func (fs *FileSystemStorage) AppendChunk(repoName, uploadID string, chunk io.Rea
 }
 
 // CommitUpload 完成一个上传。
-// 它会校验临时文件的 digest 是否与客户端提供的 digest 匹配。
+// 校验临时文件的 digest 是否与客户端提供的 digest 匹配。
 // 如果匹配，将文件移动到最终的内容寻址位置，并清理临时目录。
 func (fs *FileSystemStorage) CommitUpload(repoName, uploadID, expectedDigest string) error {
 	uploadPath := fs.getUploadPath(repoName, uploadID)
@@ -374,7 +372,7 @@ func (fs *FileSystemStorage) GetBlobAsBytes(digest string) ([]byte, error) {
 	return io.ReadAll(reader)
 }
 
-// writeBlobData 封装了 Create->Write->Sync->Close 流程，用于以健壮的方式将数据写入 blob 存储。
+// writeBlobData 封装了 Create->Write->Sync->Close 流程
 func (fs *FileSystemStorage) writeBlobData(digest string, data []byte) error {
 	path, err := fs.getBlobPath(digest)
 	if err != nil {
@@ -401,8 +399,8 @@ func (fs *FileSystemStorage) writeBlobData(digest string, data []byte) error {
 	return file.Close()
 }
 
-// PutManifest (最终版) - 实现了智能的 manifest list 维护和健壮的文件写入。
-// reference 可以是 tag 或 digest。
+// PutManifest - manifest list 维护和文件写入。
+// reference 内容可能是 tag 或 digest。
 // newManifestBytes 是客户端上传的单架构 manifest 内容。
 func (fs *FileSystemStorage) PutManifest(repoName, reference, contentType string, newManifestBytes []byte) (string, error) {
 	log.Printf("[INFO] PutManifest start: repo=%s reference=%s contentType=%s size=%d", repoName, reference, contentType, len(newManifestBytes))
@@ -564,14 +562,13 @@ func (fs *FileSystemStorage) GetManifest(repoName, reference string) ([]byte, st
 	if strings.HasPrefix(reference, "sha256:") {
 		digest = reference
 		// 在通过 digest 获取 manifest 之前，必须先验证它是否属于这个仓库。
-		// 我们通过检查 revision link 是否存在来做到这一点。
+		// 检查 revision link 是否存在
 		revisionPath, err := fs.getManifestRevisionPath(repoName, digest)
 		if err != nil {
 			return nil, "", "", err // 可能是 digest 格式错误
 		}
 		if _, err := os.Stat(revisionPath); os.IsNotExist(err) {
 			// 如果 revision link 不存在，意味着这个 manifest 不属于该仓库
-			// (或者已经被删除了)，因此我们必须返回 Not Found。
 			return nil, "", "", registry.ErrManifestNotFound
 		}
 	} else {
@@ -615,7 +612,7 @@ func (fs *FileSystemStorage) GetManifest(repoName, reference string) ([]byte, st
 }
 
 // DeleteTag 删除一个 tag 链接。
-// 注意：这不会删除 manifest blob 或任何相关的 layer blob。
+// 不会删除 manifest blob 或任何相关的 layer blob。
 func (fs *FileSystemStorage) DeleteTag(repoName, tag string) error {
 	tagPath := fs.getManifestTagPath(repoName, tag)
 
@@ -655,7 +652,7 @@ func (fs *FileSystemStorage) getLockPath(repoName string) string {
 	return p
 }
 
-// DeleteManifest (最终合规版) - 按 digest 删除一个 unreferenced manifest。
+// DeleteManifest - 按 digest 删除一个 unreferenced manifest。
 func (fs *FileSystemStorage) DeleteManifest(repoName, digest string) error {
 	log.Printf("[INFO] DeleteManifest start: repo=%s digest=%s", repoName, digest)
 
