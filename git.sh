@@ -2,7 +2,7 @@
 
 git add .
 git commit -m $*
-git push origin go_邪修 --force
+git push origin stage3
 
 
 echo "提交完成! 按任意键继续..."
