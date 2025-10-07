@@ -1,16 +1,18 @@
 # Docker It Yourself 设计心得
 
-本项目通过Go语言实现了一个符合 [Docker Registry HTTP API V2 规范](https://docs.docker.com/reference/api/registry/latest/) 的简化后端服务，其本质上依旧是一个Web应用
+本项目为 BUPT BYR 技术组后端面试题，通过Go语言实现了一个符合 [Docker Registry HTTP API V2 规范](https://docs.docker.com/reference/api/registry/latest/) 的简化后端服务，支持基本的 Blob 上传和检索、Manifest 管理校验以及一定的错误处理，但其本质上依旧是一个Web应用
 
 ## 设计思路
 
-题目中的要求并不多，主要的程序部分在于实现文档中所规定的4+7个接口。由于Go与docker的兼容性，方便在Debian GNU/Linux 13中进行测试，本人最终选择了Go语言开发+WSL2+docker的方案
+题目中的要求并不多，主要的程序部分在于实现文档中所规定的4+7个接口。由于Go与docker的兼容性，方便在Debian GNU/Linux 13中进行测试，本人最终选择了Go语言开发+WSL2+docker的方案，并设定了运行时自动识别环境，以便在Windows中也可以进行测试
 
 在阅读三种操作流程时我了解到这一个registry的使用逻辑，并决定初步实现实体类定义和一些文件系统的基础操作。在此之后，再在实现接口的过程中逐步完善文件系统的操作（服务层）
 
-由于本人并不是很熟悉Go应用的web开发，在花费了一段时间速通了Go语言基础后，我借助网上搜索的资料和Gemini的提示，最终采用了经典的分层架构设计，这与常用的Java Spring 开发有异曲同工之妙
+由于本人并不是很熟悉Go应用的web开发，在花费了一段时间速通了Go语言基础后，我借助网上搜索的资料和Gemini的提示，最终采用了经典的分层架构设计，实行接口控制逻辑、服务层调用和文件操作分离的模式，这与经典的 MVC 开发有异曲同工之妙
 
 在接口开发的规划中，我将接口开发分类为三个模块，逐步实现开发，并在功能测试的最后完成内部错误的处理。
+
+测试时借助了powershell脚本，并在脚本中简要加入了测试的上传文件，多接口调用尝试对整个流程进行模拟
 
 详细的设计内容在[初步设计与实现文档](设计与实现文档.md)和[完整接口实现文档](接口实现文档.md)下
 
@@ -59,7 +61,7 @@ tag 实际上是一个“指向某个 manifest digest 的链接文件
 
 修改Delete之后通过调试又发现，即使使用删除功能，getmanifest仍能找到。回顾修改发现，DeleteManifest 从删除tag变成了只是移除了仓库级的 revision 元数据（revisions/`<alg>`/`<hex>`），但 GetManifest 在以 digest 请求时仍然可能绕过对 revision 存在性的检查去直接读取全局 blob 或通过 tag 去解析，导致删除后仍能访问到该 manifest
 
-因此在最后部分，通过在GetManifest的开始验证digest的修订链接是否在revisions中存在来使核验与Delete一直
+因此在最后部分，通过在GetManifest的开始验证digest的修订链接是否在revisions中存在来使核验与Delete一致
 
 ## 优缺点分析与疑惑
 
