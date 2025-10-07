@@ -2,6 +2,8 @@
 
 本项目为 BUPT BYR 技术组后端面试题，通过Go语言实现了一个符合 [Docker Registry HTTP API V2 规范](https://docs.docker.com/reference/api/registry/latest/) 的简化后端服务，支持基本的 Blob 上传和检索、Manifest 管理校验以及一定的错误处理，但其本质上依旧是一个Web应用
 
+A Go-based simplified backend for the BUPT BYR Tech Team interview, implementing key features of the Docker Registry HTTP API V2 — including blob handling, manifest management, and basic validation — as a lightweight web service.
+
 ## 设计思路
 
 题目中的要求并不多，主要的程序部分在于实现文档中所规定的4+7个接口。由于Go与docker的兼容性，方便在Debian GNU/Linux 13中进行测试，本人最终选择了Go语言开发+WSL2+docker的方案，并设定了运行时自动识别环境，以便在Windows中也可以进行测试
