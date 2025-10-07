@@ -2,7 +2,7 @@
 
 git add .
 git commit -m $*
-git push origin stage3
+git push origin stage3 --force
 
 
 echo "提交完成! 按任意键继续..."
