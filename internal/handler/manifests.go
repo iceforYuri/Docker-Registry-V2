@@ -46,7 +46,7 @@ func (h *Handler) handleManifestGet(w http.ResponseWriter, r *http.Request) {
 
 	// 4. 设置成功的响应头
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	// w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 	w.Header().Set("Docker-Content-Digest", digest)
 
 	// 5. 写入 200 OK 状态码和 Manifest 内容
@@ -78,7 +78,6 @@ func (h *Handler) handleManifestHead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Content-Digest", digest)
 
 	w.WriteHeader(http.StatusOK)
-	// 注意：对于 HEAD 请求，我们在这里停止，不调用 w.Write()
 }
 
 // handleManifestPut 负责处理 PUT /v2/{name}/manifests/{reference} 请求。
@@ -138,10 +137,16 @@ func (h *Handler) handleManifestPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. 验证 Manifest 依赖的所有 Blob 是否都存在
+	// 4. 验证 Manifest 依赖的所有 Blob/Manifest 是否都存在
 	var digestsToCheck []string
+	var manifestDigestsToCheck []string // 新增：用于检查 manifest 引用
+
+	// 增加调试输出：打印 repo / reference / contentType
+	log.Printf("[DEBUG] handleManifestPut start: repo=%s reference=%s contentType=%s", repoName, reference, contentType)
+
 	switch contentType {
-	case "application/vnd.docker.distribution.manifest.v2+json":
+	case "application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.oci.image.manifest.v1+json":
 		var manifest registry.Manifest
 		if err := json.Unmarshal(body, &manifest); err != nil {
 			registry.WriteErrorResponse(w, http.StatusBadRequest, "MANIFEST_INVALID", "failed to parse manifest")
@@ -151,26 +156,79 @@ func (h *Handler) handleManifestPut(w http.ResponseWriter, r *http.Request) {
 		for _, layer := range manifest.Layers {
 			digestsToCheck = append(digestsToCheck, layer.Digest)
 		}
-	case "application/vnd.docker.distribution.manifest.list.v2+json":
+		log.Printf("[DEBUG] handleManifestPut: parsed image manifest, config=%s layers=%d", manifest.Config.Digest, len(manifest.Layers))
+	case "application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.index.v1+json":
 		var manifestList registry.ManifestList
 		if err := json.Unmarshal(body, &manifestList); err != nil {
 			registry.WriteErrorResponse(w, http.StatusBadRequest, "MANIFEST_INVALID", "failed to parse manifest list")
 			return
 		}
+		// manifest list 引用的是其他 manifest，不是 blob
 		for _, manifestDesc := range manifestList.Manifests {
-			digestsToCheck = append(digestsToCheck, manifestDesc.Digest)
+			manifestDigestsToCheck = append(manifestDigestsToCheck, manifestDesc.Digest)
 		}
+		log.Printf("[DEBUG] handleManifestPut: parsed manifest list, manifests=%d", len(manifestList.Manifests))
 	}
 
+	// 增加调试：输出将要检查的 digest 列表（略长时只打印数量）
+	if len(digestsToCheck) > 0 {
+		log.Printf("[DEBUG] handleManifestPut: blobs to check count=%d", len(digestsToCheck))
+		for i, d := range digestsToCheck {
+			if i < 10 {
+				log.Printf("[TRACE] handleManifestPut: blob[%d]=%s", i, d)
+			} else if i == 10 {
+				log.Printf("[TRACE] handleManifestPut: ...more blobs suppressed...")
+			}
+		}
+	} else {
+		log.Printf("[DEBUG] handleManifestPut: no blob digests to check")
+	}
+	if len(manifestDigestsToCheck) > 0 {
+		log.Printf("[DEBUG] handleManifestPut: manifest refs to check count=%d", len(manifestDigestsToCheck))
+		for i, d := range manifestDigestsToCheck {
+			if i < 10 {
+				log.Printf("[TRACE] handleManifestPut: manifestRef[%d]=%s", i, d)
+			} else if i == 10 {
+				log.Printf("[TRACE] handleManifestPut: ...more manifest refs suppressed...")
+			}
+		}
+	} else {
+		log.Printf("[DEBUG] handleManifestPut: no manifest refs to check")
+	}
+
+	// 检查 blob 是否存在
 	for _, digest := range digestsToCheck {
+		log.Printf("[DEBUG] handleManifestPut: checking blob existence: %s", digest)
 		if _, err := h.Storage.StatBlob(digest); err != nil {
 			if errors.Is(err, registry.ErrBlobNotFound) {
+				log.Printf("[ERROR] handleManifestPut: blob not found: %s", digest)
 				registry.WriteErrorResponse(w, http.StatusBadRequest, "MANIFEST_BLOB_UNKNOWN", fmt.Sprintf("blob unknown to registry: %s", digest))
 				return
 			}
+			log.Printf("[ERROR] handleManifestPut: StatBlob error: %v", err)
 			registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to check blob existence")
 			return
 		}
+		log.Printf("[DEBUG] handleManifestPut: blob exists: %s", digest)
+	}
+
+	// 检查引用的 manifest 是否存在
+	for _, digest := range manifestDigestsToCheck {
+		log.Printf("[DEBUG] handleManifestPut: checking referenced manifest existence: %s", digest)
+		// 使用 GetManifest 检查 manifest 是否存在（会检查 revision link）
+		_, _, _, err := h.Storage.GetManifest(repoName, digest)
+		if err != nil {
+			if errors.Is(err, registry.ErrManifestNotFound) {
+				log.Printf("[ERROR] handleManifestPut: referenced manifest not found: %s", digest)
+				registry.WriteErrorResponse(w, http.StatusBadRequest, "MANIFEST_BLOB_UNKNOWN", fmt.Sprintf("manifest unknown to registry: %s", digest))
+				return
+			}
+			log.Printf("[ERROR] handleManifestPut: failed to check manifest existence: %s err=%v", digest, err)
+			registry.WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to check manifest existence")
+			return
+		}
+		log.Printf("[DEBUG] handleManifestPut: referenced manifest exists: %s", digest)
 	}
 
 	// 5. 计算并验证 Manifest 的 Digest

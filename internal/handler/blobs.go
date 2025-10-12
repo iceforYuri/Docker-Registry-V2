@@ -90,7 +90,7 @@ func (h *Handler) handleBlobUploadStart(w http.ResponseWriter, r *http.Request) 
 	mountDigest := r.URL.Query().Get("mount")
 	fromRepo := r.URL.Query().Get("from")
 
-	// --- 逻辑 1: 尝试挂载 Blob (升级版) ---
+	// --- 逻辑 1: 尝试挂载 Blob ---
 	if mountDigest != "" && fromRepo != "" {
 
 		if !registry.DigestRegex.MatchString(mountDigest) {
